@@ -4,15 +4,16 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 import time
+import csv
 
 # === CONFIGURATION ===
-CHROMEDRIVER_PATH = '/usr/local/bin/chromedriver'  # Vérifie que ce chemin est correct
-GROUP_NAME = "Procédure Belgique 2025-2026"         # Nom exact du groupe WhatsApp
-WAIT_TIME = 15                                      # Délai pour scanner le QR code
+CHROMEDRIVER_PATH = '/usr/local/bin/chromedriver'  # Vérifie ce chemin
+GROUP_NAME = "Hackathon"
+WAIT_TIME = 60
 
 # === LANCEMENT SELENIUM ===
 options = webdriver.ChromeOptions()
-options.add_argument("--user-data-dir=./profile")  # Sauvegarde la session utilisateur
+options.add_argument("--user-data-dir=./profile")  # Pour éviter de rescanner le QR à chaque fois
 service = Service(CHROMEDRIVER_PATH)
 driver = webdriver.Chrome(service=service, options=options)
 
@@ -30,7 +31,6 @@ search_box.click()
 time.sleep(1)
 search_box.send_keys(GROUP_NAME)
 
-# === CLIQUER SUR LE GROUPE ===
 try:
     group = wait.until(EC.presence_of_element_located(
         (By.XPATH, f'//span[@title="{GROUP_NAME}"]')
@@ -38,33 +38,71 @@ try:
     group.click()
     time.sleep(2)
 except:
-    print("❌ Groupe non trouvé. Vérifie le nom.")
+    print("❌ Groupe non trouvé.")
     driver.quit()
     exit()
 
-# === SCROLLER POUR CHARGER PLUS DE MESSAGES (optionnel) ===
-try:
-    message_container = driver.find_element(By.XPATH, '//div[@data-testid="chat-history"]')
-    for _ in range(5):  # scrolle 5 fois vers le haut pour charger plus de messages
-        driver.execute_script("arguments[0].scrollTop = 0", message_container)
-        time.sleep(1)
-except Exception as e:
-    print("⚠️ Impossible de scroller les messages :", e)
+# === LOCALISER UN PREMIER MESSAGE POUR REMONTER AU CONTENEUR PARENT ===
+print("📥 Recherche d'un message pour remonter au conteneur parent...")
 
-# === RÉCUPÉRATION DES MESSAGES VISIBLES ===
-print("📥 Récupération des messages...")
-messages = driver.find_elements(By.XPATH, '//div[contains(@class,"message-in") or contains(@class,"message-out")]//span[@dir="ltr"]')
+first_message = wait.until(EC.presence_of_element_located((
+    By.XPATH, '//div[contains(@class, "message-in") or contains(@class, "message-out")]'
+)))
 
-if not messages:
-    print("❌ Aucun message trouvé. Vérifie que tu es bien dans le groupe.")
-else:
-    for i, msg in enumerate(messages, 1):
-        try:
-            text = msg.text.strip()
-            if text:
-                print(f"{i}. {text}")
-        except Exception as e:
-            print(f"❌ Erreur pour un message : {e}")
+# Le conteneur est 4 niveaux au-dessus du message dans la hiérarchie DOM
+chat_container = first_message.find_element(By.XPATH, "./ancestor::div[@class][4]")
 
-# === FERMETURE ===
-# driver.quit()  # décommente si tu veux fermer automatiquement le navigateur après
+print("✅ Conteneur localisé. Chargement de l'historique...")
+
+# === SCROLLER POUR CHARGER L’HISTORIQUE ===
+last_height = driver.execute_script("return arguments[0].scrollHeight", chat_container)
+# === SCROLLER POUR CHARGER L’HISTORIQUE ===
+print("⏪ Défilement jusqu'au tout début de la conversation...")
+
+last_height = driver.execute_script("return arguments[0].scrollHeight", chat_container)
+same_height_counter = 0
+MAX_SAME_HEIGHT = 3  # Nombre de fois où la hauteur ne change pas avant d'arrêter
+
+while True:
+    driver.execute_script("arguments[0].scrollTop = 0", chat_container)
+    time.sleep(2)  # attendre le chargement des anciens messages
+    new_height = driver.execute_script("return arguments[0].scrollHeight", chat_container)
+
+    if new_height == last_height:
+        same_height_counter += 1
+        print(f"🧱 Hauteur identique ({same_height_counter}/{MAX_SAME_HEIGHT})")
+        if same_height_counter >= MAX_SAME_HEIGHT:
+            break
+    else:
+        same_height_counter = 0
+        last_height = new_height
+
+print("✅ Défilement terminé. Tous les messages devraient être chargés.")
+
+
+print("\n✅ Fin du chargement.")
+
+# === EXTRACTION DE TOUS LES MESSAGES ===
+print("📥 Extraction des messages...")
+message_blocks = chat_container.find_elements(By.XPATH, './/div[contains(@class,"message-in") or contains(@class,"message-out")]')
+
+all_texts = []
+for i, block in enumerate(message_blocks, 1):
+    try:
+        span = block.find_element(By.XPATH, './/span[@dir="ltr"]')
+        text = span.text.strip()
+        if text:
+            print(f"{i}. {text}")
+            all_texts.append(text)
+    except Exception:
+        continue  # Certains blocs n'ont pas de texte
+
+# === SAUVEGARDE CSV ===
+with open("messages.csv", "w", newline="", encoding="utf-8") as f:
+    writer = csv.writer(f)
+    writer.writerow(["id", "message"])
+    for i, msg in enumerate(all_texts, 1):
+        writer.writerow([i, msg])
+
+print(f"💾 {len(all_texts)} messages sauvegardés dans messages.csv")
+print("✅ Terminé.")
